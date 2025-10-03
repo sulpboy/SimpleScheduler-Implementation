@@ -42,4 +42,24 @@ int main(int argc, char* argv[]){
     int ncpu=atoi(argv[1]);
     int tslice=atoi(argv[2]);
     printf("NCPU=%d, TSLICE=%d ms\n",ncpu,tslice);
+
+    while(1){
+        int cur_run=0;
+        pid_t run_jobs[ncpu];
+
+        for (int i=0;i<ncpu;i++){
+            pid_t pid=pop();
+            if (pid==-1){
+                break;
+            }
+            run_jobs[cur_run++]=pid;
+            kill(pid, SIGCONT);
+            printf("Running PID: %d\n",pid);
+        }
+
+        if (cur_run==0){
+            printf("ALL JOBS ARE DONE>>GGS xD\n");
+            break;
+        }
+    }
 }
