@@ -44,7 +44,26 @@ int main(int argc, char* argv[]){
 	        exit(1);
 	    }
 
+	   	line[strcspn(line,"\n")]=0;
 
+	   	if (strncmp(line,"submit ",7)==0){
+	   		char *exec_obj=line+7;
+	   		pid_t job_pid=fork();
+
+	   		if (job_pid==0){
+	   			raise(SIGSTOP);
+	   			char* arul[]={exec_obj,NULL};
+	   			execvp(exec_obj,arul);
+	   			perror("Failed to execute object");
+	   			exit(1);
+	   		} else {
+	   			printf("Added Job: %s, PID=%d\n",exec_obj,job_pid);
+	   		}
+	   	} else if (strncmp(line,"exit")==0){
+	   		break;
+	   	} else {
+	   		printf("Unknown command: %s\n", line);
+	   	}
 	}
 
 	free(line);
