@@ -7,6 +7,17 @@
 #include <string.h>
 #include <signal.h>
 
+typedef struct {
+    char name[100];
+    pid_t pid;
+    int start_t;      
+    int end_t;         
+    int wait_t;       
+    int status;
+} job_info;
+
+job_info jobs[100];
+int job_count = 0;
 
 int main(int argc, char* argv[]){
 	if (argc!=3){
@@ -30,7 +41,7 @@ int main(int argc, char* argv[]){
 		exit(1);
 	} 
 
-	printf("Scheduler PID= %d\n");
+	printf("Scheduler PID= %d\n",sched_pid);
 	fflush(stdout);
 
 	char* line=NULL;
@@ -57,9 +68,26 @@ int main(int argc, char* argv[]){
 	   			perror("Failed to execute object");
 	   			exit(1);
 	   		} else {
+	   			strcpy(jobs[job_count].name, exec_obj);
+	   			jobs[job_count].pid=job_pid;
+	   			jobs[job_count].start_t=-1;
+	   			jobs[job_count].status=0;
+	   			jobs[job_count].end_t = -1;
+                jobs[job_count].wait_t = 0;
+	   			job_count++;
 	   			printf("Added Job: %s, PID=%d\n",exec_obj,job_pid);
 	   		}
-	   	} else if (strncmp(line,"exit")==0){
+	   	} else if (strcmp(line,"exit")==0){
+	   		kill(sched_pid,SIGUSR1);
+	   		waitpid(sched_pid,NULL,O);
+	   		printf("Reports:\n");
+	   		printf("%-15s %-8s %-15s %-10s\n", "Name", "PID", "Completion(ms)", "Wait(ms)");
+			printf("--------------------------------------------------------\n");
+	   		for (int i = 0; i < job_count; i++) {
+	   			int comp=(jobs[i].end_t>0 ? jobs[i].end_t:1)*tslice;
+	   			int wait=jobs[i].wait_t*tslice;
+	   			printf("%-15s %-8d %-15d %-10d\n",jobs[i].name, jobs[i].pid,comp,wait);
+	   		}
 	   		break;
 	   	} else {
 	   		printf("Unknown command: %s\n", line);

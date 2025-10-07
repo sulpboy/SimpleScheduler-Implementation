@@ -4,11 +4,24 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <errno.h>
+
 
 typedef struct{
     char name[100];
     pid_t pid;
 } job_st;
+
+static volatile sig_atomic_t tick = 0;
+volatile sig_atomic_t shell_status = 0;
+
+void tickh(int sig){
+    tick=1;
+}
+
+void shellexit(int sig){
+    shell_status=1;
+}
 
 job_st rdqueue[100];
 int f=0, r=0;
@@ -41,25 +54,78 @@ int main(int argc, char* argv[]){
 
     int ncpu=atoi(argv[1]);
     int tslice=atoi(argv[2]);
-    printf("NCPU=%d, TSLICE=%d ms\n",ncpu,tslice);
+    
+    signal(SIGALRM, tickh);
+    signal(SIGUSR1,shellexit);
 
-    while(1){
-        int cur_run=0;
-        pid_t run_jobs[ncpu];
+    struct itimerval timer;
+    timer.it_interval.tv_sec=tslice/1000;
+    timer.it_interval.tv_usec=(tslice%1000)*1000;
+    timer.it_value=timer.it_interval;
+    setitimer(ITIMER_REAL,&timer,NULL);
+    
 
-        for (int i=0;i<ncpu;i++){
-            pid_t pid=pop();
-            if (pid==-1){
-                break;
-            }
-            run_jobs[cur_run++]=pid;
-            kill(pid, SIGCONT);
-            printf("Running PID: %d\n",pid);
-        }
+    pid_t run_jobs[ncpu];
+    int cur_run=0;
 
-        if (cur_run==0){
-            printf("ALL JOBS ARE DONE>>GGS xD\n");
+
+    for(int i=0;i<ncpu;i++){
+        pid_t p = pop();
+        if(p == -1){
             break;
         }
+        run_jobs[cur_run++]=p;
+        kill(p,SIGCONT);
     }
+
+    int cur_tick=0;
+    while(1){
+        pause();
+
+        if(!tick) continue;
+        tick = 0;
+        cur_tick++;
+
+        for(int i=0;i<ncpu;i++){
+            pid_t p = run_jobs[i];
+            if (p<=0) continue;
+
+            if (kill(p, 0) == -1 && errno == ESRCH) {
+                printf("Job PID=%d finished at tick=%d\n", p, cur_tick);
+                run_jobs[i] = -1;
+                continue;
+            }
+
+            if(kill(p,SIGSTOP) == -1){
+                if( errno !=ESRCH){};
+            }else{
+                add(p,NULL);
+            }
+        }
+
+        cur_run=0;
+
+        for(int i=0;i<ncpu;i++){
+            pid_t p =pop();
+            if(p==-1) break;
+            run_jobs[cur_run++] = p;
+            kill(p,SIGCONT);
+        }
+
+        int das=0;
+        for(int i=0;i<ncpu;i++){
+            if(run_jobs[i]>0){
+                das=1;
+                break;
+            }
+        }
+
+        if (shell_status && n==0 && !das){
+            printf("Scheduler terminating\n");
+            break;
+        }
+
+    }
+
+    return 0;
 }
