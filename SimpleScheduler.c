@@ -1,131 +1,228 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
-#include <sys/wait.h>
-#include <time.h>
+#include <sys/time.h>
 #include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#define MAXJOBS 100
+#define QCAP    100
 
+typedef struct { pid_t pid; char name[100]; } sched_msg_t; // for shell to scheduler
+typedef struct { pid_t pid; int compt; int waitt; } shell_msg_t; // for scheduler to shell
 
-typedef struct{
-    char name[100];
+typedef struct {
+    int   in_use;
     pid_t pid;
-} job_st;
+    char  name[100];
 
-static volatile sig_atomic_t tick = 0;
-volatile sig_atomic_t shell_status = 0;
+    int   start_q;     //starting timeslice
+    int   end_q;       //final timeslice
+    int   run_ticks;   //running timeslice
+    int   running;   
+} job_t;
 
-void tickh(int sig){
-    tick=1;
-}
+static job_t jobs[MAXJOBS];
 
-void shellexit(int sig){
-    shell_status=1;
-}
+//queue for slots for jobs
+static int rq[QCAP], rq_f=0, rq_r=0, rq_n=0;
+static void rq_add(int slot){ if (rq_n<QCAP){ rq[rq_r]=slot; rq_r=(rq_r+1)%QCAP; rq_n++; } } //adding to ready queue
+static int  rq_pop(int* slot){ if (rq_n<1) return 0; *slot=rq[rq_f]; rq_f=(rq_f+1)%QCAP; rq_n--; return 1; }//removing from ready queue
+static int *run_slots = NULL;
+static volatile sig_atomic_t tick_flag = 0;
+static volatile sig_atomic_t want_shutdown = 0; //for shutdown
+static int cur_tick = 0;
+static int NCPU = 1;
+static int FD_IN = 3; 
+static int FD_OUT = 4;
 
-job_st rdqueue[100];
-int f=0, r=0;
-int n=0;
+//some signals
+static void on_tick(int sig){ (void)sig; tick_flag = 1; }
+static void on_shell_exit(int sig){ (void)sig; want_shutdown = 1; }
 
-void add(pid_t pid, const char* name){
-    if (n>=100) return;
-    rdqueue[r].pid=pid;
-    if (name){
-        snprintf(rdqueue[r].name,100,"%s",name);
+//slots allocation n shi....
+static int alloc_slot(void){
+    for (int i=0;i<MAXJOBS;i++){
+        if (!jobs[i].in_use){
+            jobs[i].in_use = 1;
+            jobs[i].pid = -1;
+            jobs[i].name[0] = '\0';
+            jobs[i].start_q = 0;
+            jobs[i].end_q = -1;
+            jobs[i].run_ticks = 0;
+            jobs[i].running = 0;
+            return i;
+        }
     }
-    n++;
-    r=(r+1)%100;
+    return -1;
 }
-
-pid_t pop(){
-    if (n<1) return -1;
-    pid_t pid=rdqueue[f].pid;
-    f=(f+1)%100;
-    n--;
-    return pid;
-}
+static void free_slot(int slot){ if (slot>=0 && slot<MAXJOBS) jobs[slot].in_use = 0; }
 
 
-int main(int argc, char* argv[]){
-    if (argc!=3){
-        fprintf(stderr,"Missing: <NCPU> <TSLICE(ms)>\n");
-        exit(1);
+static int submit_eof = 0; // for setting when FD_IN reaches EOF lol 
+static void drain_new_jobs(void){
+    while(1){
+        sched_msg_t m;
+        ssize_t nread = read(FD_IN, &m, sizeof m);
+        if (nread == (ssize_t)sizeof m){
+            int slot = alloc_slot();
+            if (slot < 0) {
+                continue; // queue is full :c
+            }
+            jobs[slot].pid = m.pid;
+            snprintf(jobs[slot].name, sizeof jobs[slot].name, "%s", m.name);
+            jobs[slot].start_q = cur_tick + 1; //updating start timeslice for job
+            jobs[slot].end_q   = -1;
+            rq_add(slot);
+            continue;}
+        if (nread == 0){ submit_eof = 1; break; }            // shell closed write end 
+        if (nread == -1 && errno == EINTR) continue;         // interrupted error
+        if (nread == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        break;
     }
+}
 
-    int ncpu=atoi(argv[1]);
-    int tslice=atoi(argv[2]);
-    
-    signal(SIGALRM, tickh);
-    signal(SIGUSR1,shellexit);
+// to check if process is alive
+static int proc_alive(pid_t p){
+    if (p <= 0) return 0;
+    if (kill(p, 0) == 0) return 1;
+    return (errno != ESRCH) && (errno != EINVAL); // error check
+}
 
+static void stop_slot(int slot){
+    pid_t p = jobs[slot].pid;
+    if (p <= 0) return;
+    if (kill(p, SIGSTOP) == -1 && errno == ESRCH) { //sending sigstop to process
+    }
+    jobs[slot].running = 0;
+}
+static void cont_slot(int slot){
+    pid_t p = jobs[slot].pid;
+    if (p <= 0) return;
+    if (kill(p, SIGCONT) == -1 && errno == ESRCH) { //sending sigcont to process
+        jobs[slot].running = 0;
+        return;
+    }
+    jobs[slot].running = 1;
+}
+// to send result to shell
+static void send_result(int slot){
+    if (!jobs[slot].in_use) return;
+    if (jobs[slot].end_q < 0) {
+        jobs[slot].end_q = cur_tick;
+    }
+    int comp_slices = jobs[slot].end_q - jobs[slot].start_q;
+    if (comp_slices < 1) comp_slices = 1;
+    int wait_slices = comp_slices - jobs[slot].run_ticks;
+    if (wait_slices < 0) wait_slices = 0;
+    shell_msg_t res = {
+        .pid   = jobs[slot].pid,
+        .compt = comp_slices,
+        .waitt = wait_slices
+    };
+
+
+
+    (void)write(FD_OUT, &res, sizeof res);
+    free_slot(slot);
+}
+
+static int all_done(void){
+    if (rq_n > 0) return 0;
+    for (int i=0;i<NCPU;i++) if (run_slots[i] >= 0) return 0; //finishing up stuff
+    for (int i=0;i<MAXJOBS;i++) if (jobs[i].in_use) return 0;
+    return 1;
+}
+
+int main(int argc, char **argv){
+    if (argc != 3 && argc != 5){
+        fprintf(stderr, "Usage: scheduler <NCPU> <TSLICE(ms)> [FD_IN FD_OUT]\n");
+        return 1;
+    }
+    NCPU = atoi(argv[1]);
+    int tslice = atoi(argv[2]);
+    if (NCPU < 1 || tslice <= 0) {
+        fprintf(stderr, "Bad arguments given\n"); //error checking
+        return 1;
+    }
+    int fl = fcntl(FD_IN, F_GETFL, 0); //nonblock fds
+    if (fl != -1) fcntl(FD_IN, F_SETFL, fl | O_NONBLOCK);
+    //all signals
+    struct sigaction sa; memset(&sa,0,sizeof sa);
+    sigemptyset(&sa.sa_mask);
+    sa.sa_handler = on_tick;       sigaction(SIGALRM, &sa, NULL);
+    sa.sa_handler = on_shell_exit; sigaction(SIGUSR1, &sa, NULL);
+    //all timer
     struct itimerval timer;
     timer.it_interval.tv_sec=tslice/1000;
     timer.it_interval.tv_usec=(tslice%1000)*1000;
     timer.it_value=timer.it_interval;
-    setitimer(ITIMER_REAL,&timer,NULL);
-    
+    setitimer(ITIMER_REAL, &timer, NULL);
 
-    pid_t run_jobs[ncpu];
-    int cur_run=0;
+    run_slots = calloc((size_t)NCPU, sizeof(int));
+    if (!run_slots){ perror("calloc"); return 1;}  //error checking 
+    for (int i=0;i<NCPU;i++) run_slots[i] = -1;
 
+    //getting new jobs 
+    drain_new_jobs();
 
-    for(int i=0;i<ncpu;i++){
-        pid_t p = pop();
-        if(p == -1){
-            break;
-        }
-        run_jobs[cur_run++]=p;
-        kill(p,SIGCONT);
-    }
-
-    int cur_tick=0;
     while(1){
-        pause();
+        //again checking for new jobs to be safe
+        drain_new_jobs();
 
-        if(!tick) continue;
-        tick = 0;
+        if (!tick_flag) { // sleeping until next SIGALRM signal
+            pause();
+            continue;
+        }
+
+        tick_flag = 0;
         cur_tick++;
+        for (int i=0;i<NCPU;i++){
+            int slot = run_slots[i];
+            if (slot < 0) continue; // running the job
 
-        for(int i=0;i<ncpu;i++){
-            pid_t p = run_jobs[i];
-            if (p<=0) continue;
+            //count of runnign timeslices
+            jobs[slot].run_ticks++;
 
-            if (kill(p, 0) == -1 && errno == ESRCH) {
-                printf("Job PID=%d finished at tick=%d\n", p, cur_tick);
-                run_jobs[i] = -1;
+            //checking if process is alive.
+            if (!proc_alive(jobs[slot].pid)) {
+                jobs[slot].end_q = cur_tick;
+                run_slots[i] = -1;
+                send_result(slot);
                 continue;
             }
+            //removing the slot after process outed from runqueue
+            stop_slot(slot);
+            rq_add(slot);
+            run_slots[i] = -1;
+        }
 
-            if(kill(p,SIGSTOP) == -1){
-                if( errno !=ESRCH){};
-            }else{
-                add(p,NULL);
+        //run upto ncpu slots
+        for (int i=0;i<NCPU;i++){
+            if (run_slots[i] >= 0) continue;
+            int slot;
+            int attempts = rq_n; 
+            while (attempts-- > 0 && rq_pop(&slot)){
+                if (jobs[slot].start_q > cur_tick) {
+                    rq_add(slot);
+                    continue;
+                }
+                cont_slot(slot);
+                if (jobs[slot].running) {
+                    run_slots[i] = slot;
+                    break;
+                } else {
+                    jobs[slot].end_q = cur_tick;
+                    send_result(slot);
+                }
             }
         }
-
-        cur_run=0;
-
-        for(int i=0;i<ncpu;i++){
-            pid_t p =pop();
-            if(p==-1) break;
-            run_jobs[cur_run++] = p;
-            kill(p,SIGCONT);
-        }
-
-        int das=0;
-        for(int i=0;i<ncpu;i++){
-            if(run_jobs[i]>0){
-                das=1;
-                break;
-            }
-        }
-
-        if (shell_status && n==0 && !das){
-            printf("Scheduler terminating\n");
-            break;
-        }
-
+        //exit when no jobs or exit called
+        if ( (want_shutdown || submit_eof) && all_done() ) {break;}
     }
-
+    free(run_slots);
     return 0;
 }
