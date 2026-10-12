@@ -26,9 +26,11 @@ Separates command handling from scheduling logic into two independent programs. 
 
 Controls job execution through `SIGSTOP` and `SIGCONT`. Submitted children are initially suspended, resumed when selected for a CPU slot, and stopped again when their time slice ends. This provides explicit user-space control over when jobs are permitted to execute.
 
-### Job Initialization Hook
+### Job Initialization Hook (`dummy_main.h`)
 
 Provides a custom `dummy_main.h` header that wraps the entry point of compatible job programs. The wrapper stops the process before calling the original job logic, allowing execution to begin only after the scheduler resumes it.
+
+**Requirement:** Include `stdio.h` before `dummy_main.h` in each job's source file, and compile the source into an executable before submitting it to the shell.
 
 ### Scheduling Statistics
 
