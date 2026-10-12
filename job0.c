@@ -1,3 +1,11 @@
+// fib20.c
+#include <stdio.h>
+#include <stdint.h>
+#include <unistd.h>
+#include "dummy_main.h"   // include right after stdio.h per your spec
+
+#ifndef N
+#define N 50              // compute fib(20)
 #endif
 #ifndef NREPS
 #define NREPS 1           // repeat count; bump with -DNREPS=...
