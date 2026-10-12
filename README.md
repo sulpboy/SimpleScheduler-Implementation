@@ -47,11 +47,11 @@ gcc simple-shell.c -o shell
 gcc SimpleScheduler.c -o SimpleScheduler
 ```
 
-Ensure both executables are in the same directory, as `SimpleShell` launches `SimpleScheduler` from the current directory.
+Ensure both executables are in the same directory, as `shell` launches `SimpleScheduler` from the current directory.
 
 ### 2. Initialization
 
-Launch SimpleShell by specifying the number of concurrent CPU slots (`NCPU`) and the time quantum (`TSLICE`) in milliseconds.
+Launch shell by specifying the number of concurrent CPU slots (`NCPU`) and the time quantum (`TSLICE`) in milliseconds.
 
 ```bash
 ./shell 2 100
