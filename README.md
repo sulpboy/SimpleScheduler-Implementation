@@ -8,7 +8,7 @@ The implementation combines POSIX signals, interval timers, and inter-process co
 
 ---
 
-## Architecture & Features
+##Features
 
 ### Round-Robin Process Management
 
