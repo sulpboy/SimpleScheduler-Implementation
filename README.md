@@ -36,5 +36,88 @@ Tracks scheduling intervals and execution ticks for individual jobs. When the sh
 
 ---
 
-## Usage
+## Getting Started
+
+### 1. Compilation
+
+Compile the shell and scheduler separately using GCC:
+
+```bash
+gcc simple-shell.c -o shell
+gcc SimpleScheduler.c -o SimpleScheduler
+```
+
+Ensure both executables are in the same directory, as `SimpleShell` launches `SimpleScheduler` from the current directory.
+
+### 2. Initialization
+
+Launch SimpleShell by specifying the number of concurrent CPU slots (`NCPU`) and the time quantum (`TSLICE`) in milliseconds.
+
+```bash
+./shell 2 100
+```
+
+This starts the shell with **2 CPU slots** and a **100 ms time quantum**.
+
+### 3. Job Submission
+
+Submit executable programs through the running shell using the `submit` command.
+
+```bash
+submit ./job1.out
+submit ./test.out
+```
+
+Jobs are initially suspended and are resumed by the scheduler when selected for execution. Each job must be compiled as an executable and should include `dummy_main.h` to support scheduler-controlled startup.
+
+### 4. Shutdown and Reports
+
+When you have finished submitting jobs, enter `exit` in the shell:
+
+```text
+exit
+```
+
+The scheduler continues processing outstanding jobs before shutting down. Once scheduling is complete, SimpleShell prints a summary of submitted jobs, including their executable names, process IDs, completion times, and waiting times, measured in multiples of `TSLICE`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
